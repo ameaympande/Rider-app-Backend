@@ -31,6 +31,11 @@ export class RidesController {
     return this.ridesService.create(request.user.userId, dto);
   }
 
+  @Get('code/:inviteCode')
+  findByCode(@Param('inviteCode') inviteCode: string) {
+    return this.ridesService.findByInviteCode(inviteCode);
+  }
+
   @Get(':rideId')
   getRide(@Param('rideId') rideId: string) {
     return this.ridesService.findByIdOrThrow(rideId);

@@ -41,6 +41,18 @@ export class RidesService {
     return ride;
   }
 
+  async findByInviteCode(inviteCode: string) {
+    const ride = await this.rideModel
+      .findOne({ inviteCode: inviteCode.toUpperCase() })
+      .lean();
+
+    if (!ride) {
+      throw new NotFoundException('Ride not found');
+    }
+
+    return ride;
+  }
+
   async join(rideId: string, userId: string, dto: JoinRideDto) {
     const ride = await this.rideModel.findById(
       this.toObjectId(rideId, 'Invalid ride ID'),
