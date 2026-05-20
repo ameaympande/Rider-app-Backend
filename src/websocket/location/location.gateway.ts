@@ -17,6 +17,7 @@ import { RequestUser } from '../../common/interfaces/request-user.interface';
 import { RidesService } from '../../rides/rides.service';
 import { SaveLocationDto } from '../../tracking/dto/save-location.dto';
 import { TrackingService } from '../../tracking/tracking.service';
+import { UsersService } from '../../users/users.service';
 
 type SocketState = {
   user: RequestUser;
@@ -40,6 +41,7 @@ export class LocationGateway
     private readonly authService: AuthService,
     private readonly ridesService: RidesService,
     private readonly trackingService: TrackingService,
+    private readonly usersService: UsersService,
   ) {}
 
   // ======================================
@@ -63,10 +65,14 @@ export class LocationGateway
     }
 
     try {
+      const user = this.authService.verifyAccessToken(token);
       this.socketStates.set(client.id, {
-        user: this.authService.verifyAccessToken(token),
+        user,
         rideIds: new Set<string>(),
       });
+
+      // Update presence asynchronously
+      this.usersService.updatePresence(user.userId, true).catch(() => {});
     } catch {
       client.disconnect(true);
     }
@@ -87,7 +93,19 @@ export class LocationGateway
       this.server.to(rideId).emit('riderLeft', {
         userId: state.user.userId,
       });
+      // Emit the requested user_left alias
+      this.server.to(rideId).emit('user_left', {
+        userId: state.user.userId,
+      });
+      // Also emit user_offline
+      this.server.to(rideId).emit('user_offline', {
+        userId: state.user.userId,
+      });
+      
+      this.trackingService.endSession(state.user.userId, rideId).catch(() => {});
     }
+
+    this.usersService.updatePresence(state.user.userId, false).catch(() => {});
 
     this.socketStates.delete(client.id);
   }
@@ -116,6 +134,9 @@ export class LocationGateway
       this.server.to(data.rideId).emit('riderJoined', {
         userId: state.user.userId,
       });
+      this.server.to(data.rideId).emit('user_joined', {
+        userId: state.user.userId,
+      });
     } catch (error) {
       this.emitError(client, error);
     }
@@ -138,11 +159,48 @@ export class LocationGateway
     this.server.to(data.rideId).emit('riderLeft', {
       userId: state.user.userId,
     });
+    this.server.to(data.rideId).emit('user_left', {
+      userId: state.user.userId,
+    });
   }
 
   // ======================================
-  // LIVE LOCATION UPDATE
+  // LIVE LOCATION UPDATE & SHARING
   // ======================================
+
+  @SubscribeMessage('startSharing')
+  async handleStartSharing(
+    @MessageBody() data: { rideId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const state = this.getSocketState(client);
+    try {
+      await this.trackingService.startSession(state.user.userId, data.rideId);
+      this.server.to(data.rideId).emit('sharing_started', {
+        rideId: data.rideId,
+        userId: state.user.userId,
+      });
+    } catch (error) {
+      this.emitError(client, error);
+    }
+  }
+
+  @SubscribeMessage('stopSharing')
+  async handleStopSharing(
+    @MessageBody() data: { rideId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const state = this.getSocketState(client);
+    try {
+      await this.trackingService.endSession(state.user.userId, data.rideId);
+      this.server.to(data.rideId).emit('sharing_stopped', {
+        rideId: data.rideId,
+        userId: state.user.userId,
+      });
+    } catch (error) {
+      this.emitError(client, error);
+    }
+  }
 
   @SubscribeMessage('locationUpdate')
   async handleLocationUpdate(
@@ -168,11 +226,27 @@ export class LocationGateway
         dto,
       );
 
+      if (!savedLocation) return; // Skip duplicate
+
       this.server.to(dto.rideId).emit('riderLocation', {
         rideId: dto.rideId,
         userId: state.user.userId,
         lat: savedLocation.lat,
         lng: savedLocation.lng,
+        accuracy: savedLocation.accuracy,
+        speed: savedLocation.speed,
+        heading: savedLocation.heading,
+        battery: savedLocation.battery,
+        status: savedLocation.status,
+        createdAt: savedLocation.createdAt,
+      });
+      // Emit the requested location_update alias
+      this.server.to(dto.rideId).emit('location_update', {
+        rideId: dto.rideId,
+        userId: state.user.userId,
+        lat: savedLocation.lat,
+        lng: savedLocation.lng,
+        accuracy: savedLocation.accuracy,
         speed: savedLocation.speed,
         heading: savedLocation.heading,
         battery: savedLocation.battery,

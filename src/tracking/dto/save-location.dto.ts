@@ -23,6 +23,11 @@ export class SaveLocationDto {
   @IsLongitude()
   lng: number;
 
+  @ApiPropertyOptional({ example: 5 })
+  @IsOptional()
+  @IsNumber()
+  accuracy?: number;
+
   @ApiPropertyOptional({ example: 72 })
   @IsOptional()
   @IsNumber()

@@ -30,6 +30,9 @@ export class RiderLocation {
   lng: number;
 
   @Prop()
+  accuracy?: number;
+
+  @Prop()
   speed: number;
 
   @Prop()

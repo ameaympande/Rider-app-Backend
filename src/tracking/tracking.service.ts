@@ -7,6 +7,10 @@ import {
   RiderLocation,
   RiderLocationDocument,
 } from '../schemas/location.schema';
+import {
+  LiveLocationSession,
+  LiveLocationSessionDocument,
+} from '../schemas/live-session.schema';
 import { LocationHistoryQueryDto } from './dto/location-history-query.dto';
 import { SaveLocationDto } from './dto/save-location.dto';
 
@@ -15,12 +19,48 @@ export class TrackingService {
   constructor(
     @InjectModel(RiderLocation.name)
     private readonly locationModel: Model<RiderLocationDocument>,
+    @InjectModel(LiveLocationSession.name)
+    private readonly sessionModel: Model<LiveLocationSessionDocument>,
     private readonly ridesService: RidesService,
   ) {}
 
+  async startSession(userId: string, rideId: string) {
+    await this.ridesService.assertMember(rideId, userId);
+    
+    // End any existing active sessions for this user in this room
+    await this.sessionModel.updateMany(
+      { userId: new Types.ObjectId(userId), roomId: new Types.ObjectId(rideId), isActive: true },
+      { isActive: false, endTime: new Date() }
+    );
+
+    return this.sessionModel.create({
+      userId: new Types.ObjectId(userId),
+      roomId: new Types.ObjectId(rideId),
+      startTime: new Date(),
+      isActive: true,
+    });
+  }
+
+  async endSession(userId: string, rideId: string) {
+    return this.sessionModel.updateMany(
+      { userId: new Types.ObjectId(userId), roomId: new Types.ObjectId(rideId), isActive: true },
+      { isActive: false, endTime: new Date() }
+    );
+  }
+
   async saveLocation(userId: string, dto: SaveLocationDto) {
     await this.ridesService.assertMember(dto.rideId, userId);
-    await this.rejectBadMovement(userId, dto);
+    const isBad = await this.rejectBadMovement(userId, dto);
+    
+    if (isBad === 'duplicate') {
+      return {
+        ...dto,
+        rideId: new Types.ObjectId(dto.rideId),
+        userId: new Types.ObjectId(userId),
+        status: dto.status ?? 'RIDING',
+        createdAt: new Date(),
+      };
+    }
 
     return this.locationModel.create({
       ...dto,
@@ -93,14 +133,14 @@ export class TrackingService {
       lastLocation.lng === dto.lng &&
       lastLocation.speed === dto.speed
     ) {
-      throw new BadRequestException('Duplicate location update');
+      return 'duplicate';
     }
 
     const seconds =
       (Date.now() - new Date(lastLocation.createdAt).getTime()) / 1000;
 
     if (seconds <= 0) {
-      return;
+      return false;
     }
 
     const meters = this.distanceMeters(
@@ -109,11 +149,19 @@ export class TrackingService {
       dto.lat,
       dto.lng,
     );
+
+    // Optimization: skip write if distance is < 5 meters
+    if (meters < 5) {
+      return 'duplicate';
+    }
+
     const kmh = (meters / seconds) * 3.6;
 
     if (kmh > 300) {
       throw new BadRequestException('Impossible GPS jump rejected');
     }
+
+    return false;
   }
 
   private distanceMeters(

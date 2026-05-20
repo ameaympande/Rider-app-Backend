@@ -1,0 +1,172 @@
+========================================================================
+RIDER COMPANION - FRONTEND INTEGRATION GUIDE
+========================================================================
+
+Base URL (Local): http://localhost:3000
+Swagger Docs:     http://localhost:3000/docs
+
+Authorization: 
+All protected REST endpoints and Socket connections require a JWT Bearer token.
+Header: `Authorization: Bearer <ACCESS_TOKEN>`
+
+------------------------------------------------------------------------
+1. REST API ROUTES
+------------------------------------------------------------------------
+
+[ AUTHENTICATION ]
+• POST /auth/send-otp
+  Body: { "phone": "+919999999999" }
+  
+• POST /auth/verify-otp
+  Body: { "phone": "+919999999999", "otp": "123456" }
+  Returns: { "accessToken", "refreshToken", "user" }
+  
+• POST /auth/refresh
+  Body: { "refreshToken": "..." }
+
+[ USER PROFILE ]
+• GET /users/me
+  Headers: Auth
+  
+• PATCH /users/me
+  Headers: Auth
+  Body: { "name"?: string, "bikeName"?: string, "avatar"?: string }
+  
+• POST /users/emergency-contact
+  Headers: Auth
+  Body: { "name": "Name", "phone": "+91..." }
+
+[ RIDE ROOMS ]
+• POST /rides
+  Headers: Auth
+  Body: { "name": "Lonavala Ride", "destination": "Lonavala", "isPrivate": true }
+  
+• GET /rides/:rideId
+  Headers: Auth
+  
+• POST /rides/:rideId/join
+  Headers: Auth
+  Body: { "inviteCode"?: "A1B2C3D4" }
+  
+• POST /rides/:rideId/leave
+  Headers: Auth
+  
+• GET /rides/:rideId/members
+  Headers: Auth
+
+[ TRACKING / LOCATIONS ]
+• GET /tracking/live/:rideId
+  Headers: Auth
+  Returns: Array of latest locations for all riders in room.
+  
+• GET /tracking/history/:rideId
+  Headers: Auth
+  Query Params: ?userId=...&startDate=...&endDate=...
+  
+• POST /tracking/location
+  Headers: Auth
+  Body: { "rideId", "lat", "lng", "accuracy", "speed", "heading", "battery", "status" }
+
+------------------------------------------------------------------------
+2. SOCKET.IO INTEGRATION
+------------------------------------------------------------------------
+
+[ CONNECTION ]
+Socket URL: http://localhost:3000
+Connection Options: 
+{
+  auth: { token: "<ACCESS_TOKEN>" },
+  transports: ['websocket']
+}
+
+[ EMIT EVENTS (Client -> Server) ]
+These are events you send from the frontend to the backend:
+
+• joinRide
+  Payload: { "rideId": "..." }
+  Desc: Join the socket room for a ride.
+
+• leaveRide
+  Payload: { "rideId": "..." }
+  Desc: Leave the socket room.
+
+• startSharing
+  Payload: { "rideId": "..." }
+  Desc: Marks the user as actively sharing location. Emits `sharing_started` to room.
+
+• stopSharing
+  Payload: { "rideId": "..." }
+  Desc: Marks the user as not sharing location. Emits `sharing_stopped` to room.
+
+• locationUpdate
+  Payload: { 
+    "rideId": "...", 
+    "lat": 18.5204, 
+    "lng": 73.8567, 
+    "accuracy": 10,
+    "speed": 60,
+    "heading": 90,
+    "battery": 80,
+    "status": "RIDING" 
+  }
+  Desc: Send location to server. Broadcasts to everyone in room.
+
+• speedUpdate
+  Payload: { "rideId": "...", "speed": 85 }
+
+• riderStatus
+  Payload: { "rideId": "...", "status": "STOPPED" }
+
+• emergencySOS
+  Payload: { "rideId": "...", "message": "Need help!" }
+
+[ LISTEN EVENTS (Server -> Client) ]
+These are events you listen for on the frontend to update the UI:
+
+• user_joined (Alias: riderJoined)
+  Payload: { "userId": "..." }
+  Desc: A user joined the socket room.
+
+• user_left (Alias: riderLeft)
+  Payload: { "userId": "..." }
+  Desc: A user left the socket room explicitly.
+
+• user_offline
+  Payload: { "userId": "..." }
+  Desc: A user disconnected from the socket completely (e.g. app closed/network drop).
+
+• sharing_started
+  Payload: { "rideId": "...", "userId": "..." }
+  Desc: A user started sharing live location.
+
+• sharing_stopped
+  Payload: { "rideId": "...", "userId": "..." }
+  Desc: A user stopped sharing live location.
+
+• location_update (Alias: riderLocation)
+  Payload: {
+    "rideId": "...",
+    "userId": "...",
+    "lat": 18.5204,
+    "lng": 73.8567,
+    "accuracy": 10,
+    "speed": 60,
+    "heading": 90,
+    "battery": 80,
+    "status": "RIDING",
+    "createdAt": "2026-05-20T12:00:00Z"
+  }
+  Desc: Live GPS update from a rider.
+
+• riderSpeed
+  Payload: { "rideId": "...", "userId": "...", "speed": 85 }
+
+• rideUpdated
+  Payload: { "rideId": "...", "userId": "...", "status": "STOPPED" }
+
+• emergencyAlert
+  Payload: { "rideId": "...", "userId": "...", "message": "..." }
+
+• error
+  Payload: { "message": "Error details..." }
+  Desc: Listens for socket-level validation or room access errors.

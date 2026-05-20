@@ -79,4 +79,15 @@ export class UsersService {
 
     return user;
   }
+
+  async updatePresence(userId: string, isOnline: boolean) {
+    return this.userModel.findByIdAndUpdate(
+      userId,
+      {
+        isOnline,
+        lastActive: new Date(),
+      },
+      { new: true }
+    );
+  }
 }

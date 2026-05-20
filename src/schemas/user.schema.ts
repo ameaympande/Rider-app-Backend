@@ -34,6 +34,12 @@ export class User {
     phone: string;
   }>;
 
+  @Prop({ default: false })
+  isOnline: boolean;
+
+  @Prop()
+  lastActive?: Date;
+
   createdAt: Date;
 
   updatedAt: Date;

@@ -29,6 +29,12 @@ describe('LocationGateway', () => {
             saveLocation: jest.fn(),
           },
         },
+        {
+          provide: require('../../users/users.service').UsersService,
+          useValue: {
+            updatePresence: jest.fn(),
+          },
+        },
       ],
     }).compile();
 

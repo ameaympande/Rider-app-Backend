@@ -2,7 +2,14 @@ import { Module } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 
 import { RidesModule } from '../rides/rides.module';
-import { RiderLocation, RiderLocationSchema } from '../schemas/location.schema';
+import {
+  RiderLocation,
+  RiderLocationSchema,
+} from '../schemas/location.schema';
+import {
+  LiveLocationSession,
+  LiveLocationSessionSchema,
+} from '../schemas/live-session.schema';
 import { TrackingController } from './tracking.controller';
 import { TrackingService } from './tracking.service';
 
@@ -13,6 +20,10 @@ import { TrackingService } from './tracking.service';
       {
         name: RiderLocation.name,
         schema: RiderLocationSchema,
+      },
+      {
+        name: LiveLocationSession.name,
+        schema: LiveLocationSessionSchema,
       },
     ]),
   ],
