@@ -234,6 +234,16 @@ export class TrackingService {
     return radius * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   }
 
+  async getLatestLocation(userId: string, rideId: string) {
+    return this.locationModel
+      .findOne({
+        userId: new Types.ObjectId(userId),
+        rideId: new Types.ObjectId(rideId),
+      })
+      .sort({ createdAt: -1 })
+      .lean();
+  }
+
   private radians(value: number) {
     return (value * Math.PI) / 180;
   }

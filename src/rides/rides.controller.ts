@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Post,
   Req,
   UseGuards,
@@ -36,6 +37,11 @@ export class RidesController {
     return this.ridesService.findByInviteCode(inviteCode);
   }
 
+  @Get('history')
+  getHistory(@Req() request: AuthRequest) {
+    return this.ridesService.getRideHistory(request.user.userId);
+  }
+
   @Get(':rideId')
   getRide(@Param('rideId') rideId: string) {
     return this.ridesService.findByIdOrThrow(rideId);
@@ -53,6 +59,15 @@ export class RidesController {
   @Post(':rideId/leave')
   leave(@Req() request: AuthRequest, @Param('rideId') rideId: string) {
     return this.ridesService.leave(rideId, request.user.userId);
+  }
+
+  @Patch(':rideId')
+  update(
+    @Req() request: AuthRequest,
+    @Param('rideId') rideId: string,
+    @Body() dto: { destination?: string; destinationLat?: number; destinationLng?: number },
+  ) {
+    return this.ridesService.update(rideId, request.user.userId, dto);
   }
 
   @Get(':rideId/members')

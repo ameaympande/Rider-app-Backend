@@ -9,6 +9,7 @@ import { randomBytes } from 'crypto';
 import { Model, Types } from 'mongoose';
 
 import { RideRoom, RideRoomDocument } from '../schemas/ride-room.schema';
+import { RideHistory, RideHistoryDocument } from '../schemas/ride-history.schema';
 import { CreateRideDto } from './dto/create-ride.dto';
 import { JoinRideDto } from './dto/join-ride.dto';
 
@@ -19,6 +20,8 @@ export class RidesService {
   constructor(
     @InjectModel(RideRoom.name)
     private readonly rideModel: Model<RideRoomDocument>,
+    @InjectModel(RideHistory.name)
+    private readonly historyModel: Model<RideHistoryDocument>,
   ) {}
 
   async create(adminId: string, dto: CreateRideDto) {
@@ -92,6 +95,19 @@ export class RidesService {
     }
 
     if (ride.adminId.toString() === userId) {
+      // Archive the ride convoy before deleting it
+      await this.historyModel.create({
+        name: ride.name,
+        destination: ride.destination,
+        destinationLat: (ride as any).destinationLat,
+        destinationLng: (ride as any).destinationLng,
+        adminId: ride.adminId,
+        isPrivate: ride.isPrivate,
+        inviteCode: ride.inviteCode,
+        members: ride.members,
+        createdAt: ride.createdAt,
+      });
+
       await this.rideModel.deleteOne({ _id: ride._id });
       rideEvents$.next({ type: 'RIDE_ENDED', rideId: ride._id.toString() });
       return null;
@@ -102,6 +118,28 @@ export class RidesService {
     );
 
     return ride.save();
+  }
+
+  async getRideHistory(userId: string) {
+    const userObjectId = this.toObjectId(userId, 'Invalid user ID');
+    return this.historyModel
+      .find({ members: userObjectId })
+      .sort({ createdAt: -1 })
+      .lean();
+  }
+
+  async countFinishedRidesForUser(userId: string): Promise<number> {
+    if (!Types.ObjectId.isValid(userId)) return 0;
+    return this.historyModel.countDocuments({
+      members: new Types.ObjectId(userId),
+    });
+  }
+
+  async countActiveRidesForUser(userId: string): Promise<number> {
+    if (!Types.ObjectId.isValid(userId)) return 0;
+    return this.rideModel.countDocuments({
+      members: new Types.ObjectId(userId),
+    });
   }
 
   async getMembers(rideId: string) {
@@ -149,6 +187,29 @@ export class RidesService {
     }
 
     return ride;
+  }
+
+  async update(rideId: string, userId: string, dto: { destination?: string; destinationLat?: number; destinationLng?: number }) {
+    const ride = await this.rideModel.findById(this.toObjectId(rideId, 'Invalid ride ID'));
+    if (!ride) {
+      throw new NotFoundException('Ride not found');
+    }
+
+    if (!ride.members.some((member) => member.toString() === userId)) {
+      throw new ForbiddenException('User is not a ride member');
+    }
+
+    if (dto.destination !== undefined) {
+      ride.destination = dto.destination;
+    }
+    if (dto.destinationLat !== undefined) {
+      (ride as any).destinationLat = dto.destinationLat;
+    }
+    if (dto.destinationLng !== undefined) {
+      (ride as any).destinationLng = dto.destinationLng;
+    }
+
+    return ride.save();
   }
 
   private toObjectId(value: string, message: string) {

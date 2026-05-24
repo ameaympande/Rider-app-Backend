@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getModelToken } from '@nestjs/mongoose';
 import { RideRoom } from '../schemas/ride-room.schema';
+import { RideHistory } from '../schemas/ride-history.schema';
 import { RidesService } from './rides.service';
 
 describe('RidesService', () => {
@@ -15,6 +16,14 @@ describe('RidesService', () => {
           useValue: {
             create: jest.fn(),
             findById: jest.fn(),
+            deleteOne: jest.fn(),
+          },
+        },
+        {
+          provide: getModelToken(RideHistory.name),
+          useValue: {
+            create: jest.fn(),
+            find: jest.fn(),
           },
         },
       ],

@@ -1,10 +1,10 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { HydratedDocument, Types } from 'mongoose';
 
-export type RideRoomDocument = HydratedDocument<RideRoom>;
+export type RideHistoryDocument = HydratedDocument<RideHistory>;
 
 @Schema({ timestamps: true })
-export class RideRoom {
+export class RideHistory {
   @Prop({
     required: true,
   })
@@ -31,8 +31,6 @@ export class RideRoom {
 
   @Prop({
     required: true,
-    unique: true,
-    index: true,
   })
   inviteCode: string;
 
@@ -40,12 +38,12 @@ export class RideRoom {
     type: [Types.ObjectId],
     ref: 'User',
     default: [],
+    index: true,
   })
   members: Types.ObjectId[];
 
-  createdAt: Date;
-
-  updatedAt: Date;
+  createdAt?: Date;
+  updatedAt?: Date;
 }
 
-export const RideRoomSchema = SchemaFactory.createForClass(RideRoom);
+export const RideHistorySchema = SchemaFactory.createForClass(RideHistory);

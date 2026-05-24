@@ -1,7 +1,9 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  Param,
   Patch,
   Post,
   Req,
@@ -15,6 +17,7 @@ import { RequestUser } from '../common/interfaces/request-user.interface';
 import { AddEmergencyContactDto } from './dto/add-emergency-contact.dto';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { CreateBikeDto } from './dto/create-bike.dto';
 import { UsersService } from './users.service';
 
 type AuthRequest = Request & { user: RequestUser };
@@ -51,5 +54,26 @@ export class UsersController {
     @Body() dto: AddEmergencyContactDto,
   ) {
     return this.usersService.addEmergencyContact(request.user.userId, dto);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Get('me/bikes')
+  getBikes(@Req() request: AuthRequest) {
+    return this.usersService.findBikes(request.user.userId);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Post('me/bikes')
+  addBike(@Req() request: AuthRequest, @Body() dto: CreateBikeDto) {
+    return this.usersService.addBike(request.user.userId, dto);
+  }
+
+  @ApiBearerAuth()
+  @UseGuards(JwtAuthGuard)
+  @Delete('me/bikes/:bikeId')
+  deleteBike(@Req() request: AuthRequest, @Param('bikeId') bikeId: string) {
+    return this.usersService.deleteBike(request.user.userId, bikeId);
   }
 }

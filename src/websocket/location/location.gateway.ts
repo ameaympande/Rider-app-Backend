@@ -220,6 +220,7 @@ export class LocationGateway
   }
 
   @SubscribeMessage('locationUpdate')
+  @SubscribeMessage('location_update')
   async handleLocationUpdate(
     @MessageBody()
     data: {
@@ -257,7 +258,8 @@ export class LocationGateway
         status: savedLocation.status,
         createdAt: savedLocation.createdAt,
       });
-      // Emit the requested location_update alias
+
+      // Emit the location_update alias
       this.server.to(dto.rideId).emit('location_update', {
         rideId: dto.rideId,
         userId: state.user.userId,
@@ -269,6 +271,17 @@ export class LocationGateway
         battery: savedLocation.battery,
         status: savedLocation.status,
         createdAt: savedLocation.createdAt,
+      });
+
+      // Emit the location_broadcast event from the specification contract
+      this.server.to(dto.rideId).emit('location_broadcast', {
+        userId: state.user.userId,
+        lat: savedLocation.lat,
+        lng: savedLocation.lng,
+        speed: savedLocation.speed,
+        heading: savedLocation.heading,
+        battery: savedLocation.battery,
+        status: savedLocation.status,
       });
     } catch (error) {
       this.emitError(client, error);
@@ -307,6 +320,21 @@ export class LocationGateway
     });
   }
 
+  @SubscribeMessage('destinationUpdate')
+  handleDestinationUpdate(
+    @MessageBody()
+    data: { rideId: string; destination: string; lat?: number; lng?: number },
+    @ConnectedSocket()
+    client: Socket,
+  ) {
+    this.server.to(data.rideId).emit('destinationUpdate', {
+      rideId: data.rideId,
+      destination: data.destination,
+      lat: data.lat,
+      lng: data.lng,
+    });
+  }
+
   @SubscribeMessage('emergencySOS')
   handleEmergencySos(
     @MessageBody()
@@ -321,6 +349,50 @@ export class LocationGateway
       userId: state.user.userId,
       message: data.message ?? 'SOS triggered',
     });
+  }
+
+  @SubscribeMessage('sos_trigger')
+  async handleSosTrigger(
+    @MessageBody()
+    data: { rideId: string },
+    @ConnectedSocket()
+    client: Socket,
+  ) {
+    const state = this.getSocketState(client);
+    try {
+      const user = await this.usersService.findByIdOrThrow(state.user.userId);
+      const latestLoc = await this.trackingService.getLatestLocation(
+        state.user.userId,
+        data.rideId,
+      );
+
+      this.server.to(data.rideId).emit('sos_broadcast', {
+        userId: state.user.userId,
+        userName: user.name || 'Rider',
+        phone: user.phone,
+        lat: latestLoc?.lat ?? 0,
+        lng: latestLoc?.lng ?? 0,
+      });
+    } catch (error) {
+      this.emitError(client, error);
+    }
+  }
+
+  @SubscribeMessage('sos_cancel')
+  async handleSosCancel(
+    @MessageBody()
+    data: { rideId: string },
+    @ConnectedSocket()
+    client: Socket,
+  ) {
+    const state = this.getSocketState(client);
+    try {
+      this.server.to(data.rideId).emit('sos_resolved_broadcast', {
+        userId: state.user.userId,
+      });
+    } catch (error) {
+      this.emitError(client, error);
+    }
   }
 
   private getSocketState(client: Socket) {

@@ -28,6 +28,22 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('docs', app, document);
 
-  await app.listen(process.env.PORT ?? 3000);
+  const port = process.env.PORT ?? 3000;
+  await app.listen(port, '0.0.0.0');
+
+  // ── Keep-alive self-ping (prevents Render free-tier from sleeping) ──
+  const renderUrl = process.env.RENDER_EXTERNAL_URL;
+  if (renderUrl) {
+    const KEEP_ALIVE_INTERVAL_MS = 14 * 60 * 1000; // 14 minutes
+    setInterval(async () => {
+      try {
+        await fetch(`${renderUrl}/health`);
+      } catch {
+        // Silently ignore — the server will wake on the next external request anyway
+      }
+    }, KEEP_ALIVE_INTERVAL_MS);
+    console.log(`Keep-alive ping enabled → ${renderUrl}/health every 14 min`);
+  }
 }
 void bootstrap();
+
