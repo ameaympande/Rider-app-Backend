@@ -1,3 +1,4 @@
+import { OnModuleInit } from '@nestjs/common';
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -18,6 +19,7 @@ import { RidesService } from '../../rides/rides.service';
 import { SaveLocationDto } from '../../tracking/dto/save-location.dto';
 import { TrackingService } from '../../tracking/tracking.service';
 import { UsersService } from '../../users/users.service';
+import { rideEvents$ } from '../../common/events/ride-events';
 
 type SocketState = {
   user: RequestUser;
@@ -30,7 +32,7 @@ type SocketState = {
   },
 })
 export class LocationGateway
-  implements OnGatewayConnection, OnGatewayDisconnect
+  implements OnGatewayConnection, OnGatewayDisconnect, OnModuleInit
 {
   @WebSocketServer()
   server: Server;
@@ -43,6 +45,14 @@ export class LocationGateway
     private readonly trackingService: TrackingService,
     private readonly usersService: UsersService,
   ) {}
+
+  onModuleInit() {
+    rideEvents$.subscribe((event) => {
+      if (event.type === 'RIDE_ENDED') {
+        this.server.to(event.rideId).emit('rideEnded', { rideId: event.rideId });
+      }
+    });
+  }
 
   // ======================================
   // USER CONNECTED
@@ -137,6 +147,13 @@ export class LocationGateway
       this.server.to(data.rideId).emit('user_joined', {
         userId: state.user.userId,
       });
+
+      // Send the initial list of live riders and their locations directly to the joining user
+      const liveRiders = await this.trackingService.getLiveRiders(
+        data.rideId,
+        state.user.userId,
+      );
+      client.emit('liveRiders', liveRiders);
     } catch (error) {
       this.emitError(client, error);
     }

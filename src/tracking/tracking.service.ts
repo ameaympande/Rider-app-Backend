@@ -73,10 +73,28 @@ export class TrackingService {
   async getLiveRiders(rideId: string, userId: string) {
     await this.ridesService.assertMember(rideId, userId);
 
-    return this.locationModel.aggregate([
+    const members = (await this.ridesService.getMembers(rideId)) as any[];
+    const userIds = members.map((m) => m._id);
+
+    // Fetch all active sessions in this ride room for these users
+    const activeSessions = await this.sessionModel
+      .find({
+        roomId: new Types.ObjectId(rideId),
+        userId: { $in: userIds },
+        isActive: true,
+      })
+      .lean();
+
+    const activeUserIdsSet = new Set(
+      activeSessions.map((s) => s.userId.toString()),
+    );
+
+    // Fetch the latest location for each user in this ride
+    const latestLocations = await this.locationModel.aggregate([
       {
         $match: {
           rideId: new Types.ObjectId(rideId),
+          userId: { $in: userIds },
         },
       },
       { $sort: { createdAt: -1 } },
@@ -86,8 +104,41 @@ export class TrackingService {
           latest: { $first: '$$ROOT' },
         },
       },
-      { $replaceRoot: { newRoot: '$latest' } },
     ]);
+
+    const locationMap = new Map(
+      latestLocations.map((item) => [item._id.toString(), item.latest]),
+    );
+
+    return members.map((member) => {
+      const userIdStr = member._id.toString();
+      const latestLoc = locationMap.get(userIdStr);
+      return {
+        user: {
+          _id: member._id,
+          name: member.name,
+          phone: member.phone,
+          avatar: member.avatar,
+          bikeName: member.bikeName,
+          isOnline: member.isOnline ?? false,
+          lastActive: member.lastActive,
+          emergencyContacts: member.emergencyContacts ?? [],
+        },
+        isSharing: activeUserIdsSet.has(userIdStr),
+        location: latestLoc
+          ? {
+              lat: latestLoc.lat,
+              lng: latestLoc.lng,
+              accuracy: latestLoc.accuracy,
+              speed: latestLoc.speed,
+              heading: latestLoc.heading,
+              battery: latestLoc.battery,
+              status: latestLoc.status,
+              createdAt: latestLoc.createdAt,
+            }
+          : null,
+      };
+    });
   }
 
   async getHistory(

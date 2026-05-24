@@ -12,6 +12,8 @@ import { RideRoom, RideRoomDocument } from '../schemas/ride-room.schema';
 import { CreateRideDto } from './dto/create-ride.dto';
 import { JoinRideDto } from './dto/join-ride.dto';
 
+import { rideEvents$ } from '../common/events/ride-events';
+
 @Injectable()
 export class RidesService {
   constructor(
@@ -90,7 +92,9 @@ export class RidesService {
     }
 
     if (ride.adminId.toString() === userId) {
-      throw new BadRequestException('Ride admin cannot leave the ride');
+      await this.rideModel.deleteOne({ _id: ride._id });
+      rideEvents$.next({ type: 'RIDE_ENDED', rideId: ride._id.toString() });
+      return null;
     }
 
     ride.members = ride.members.filter(
