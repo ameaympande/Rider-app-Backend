@@ -1,4 +1,4 @@
-import { OnModuleInit } from '@nestjs/common';
+import { Logger, OnModuleInit } from '@nestjs/common';
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -24,12 +24,21 @@ import { rideEvents$ } from '../../common/events/ride-events';
 type SocketState = {
   user: RequestUser;
   rideIds: Set<string>;
+  /** Cache of verified ride memberships to avoid redundant DB queries */
+  verifiedRides: Set<string>;
+  /** Whether this socket was sharing location before (for reconnect detection) */
+  wasSharing: boolean;
 };
 
 @WebSocketGateway({
   cors: {
     origin: process.env.CORS_ORIGIN?.split(',') ?? '*',
   },
+  // Better mobile connection resilience
+  pingTimeout: 30000, // 30s before considering disconnected
+  pingInterval: 10000, // Ping every 10s
+  transports: ['websocket', 'polling'], // Fallback to polling on bad networks
+  connectTimeout: 15000, // 15s connection timeout
 })
 export class LocationGateway
   implements OnGatewayConnection, OnGatewayDisconnect, OnModuleInit
@@ -37,6 +46,7 @@ export class LocationGateway
   @WebSocketServer()
   server: Server;
 
+  private readonly logger = new Logger(LocationGateway.name);
   private readonly socketStates = new Map<string, SocketState>();
 
   constructor(
@@ -79,10 +89,14 @@ export class LocationGateway
       this.socketStates.set(client.id, {
         user,
         rideIds: new Set<string>(),
+        verifiedRides: new Set<string>(),
+        wasSharing: false,
       });
 
       // Update presence asynchronously
       this.usersService.updatePresence(user.userId, true).catch(() => {});
+
+      this.logger.log(`User ${user.userId} connected (socket ${client.id})`);
     } catch {
       client.disconnect(true);
     }
@@ -99,6 +113,8 @@ export class LocationGateway
       return;
     }
 
+    this.logger.log(`User ${state.user.userId} disconnected (socket ${client.id})`);
+
     for (const rideId of state.rideIds) {
       this.server.to(rideId).emit('riderLeft', {
         userId: state.user.userId,
@@ -111,11 +127,15 @@ export class LocationGateway
       this.server.to(rideId).emit('user_offline', {
         userId: state.user.userId,
       });
-      
-      this.trackingService.endSession(state.user.userId, rideId).catch(() => {});
+
+      this.trackingService
+        .endSession(state.user.userId, rideId)
+        .catch(() => {});
     }
 
-    this.usersService.updatePresence(state.user.userId, false).catch(() => {});
+    this.usersService
+      .updatePresence(state.user.userId, false)
+      .catch(() => {});
 
     this.socketStates.delete(client.id);
   }
@@ -140,6 +160,8 @@ export class LocationGateway
       await this.ridesService.assertMember(data.rideId, state.user.userId);
       await client.join(data.rideId);
       state.rideIds.add(data.rideId);
+      // Cache the membership verification
+      state.verifiedRides.add(data.rideId);
 
       this.server.to(data.rideId).emit('riderJoined', {
         userId: state.user.userId,
@@ -154,6 +176,33 @@ export class LocationGateway
         state.user.userId,
       );
       client.emit('liveRiders', liveRiders);
+
+      // Check if this user had an active session (reconnection scenario)
+      const wasActive = await this.trackingService.isSessionActive(
+        state.user.userId,
+        data.rideId,
+      );
+
+      if (wasActive) {
+        // Notify the client that they have an active session that can be resumed
+        client.emit('session_restored', {
+          rideId: data.rideId,
+          userId: state.user.userId,
+          message: 'Your sharing session is still active',
+        });
+        state.wasSharing = true;
+      } else {
+        // Notify if a previous session was lost (so the client can re-start sharing)
+        client.emit('session_lost', {
+          rideId: data.rideId,
+          userId: state.user.userId,
+          message: 'Your previous sharing session has ended. Re-start sharing to resume.',
+        });
+      }
+
+      this.logger.log(
+        `User ${state.user.userId} joined ride ${data.rideId} (active session: ${wasActive})`,
+      );
     } catch (error) {
       this.emitError(client, error);
     }
@@ -172,6 +221,7 @@ export class LocationGateway
 
     await client.leave(data.rideId);
     state.rideIds.delete(data.rideId);
+    state.verifiedRides.delete(data.rideId);
 
     this.server.to(data.rideId).emit('riderLeft', {
       userId: state.user.userId,
@@ -193,6 +243,7 @@ export class LocationGateway
     const state = this.getSocketState(client);
     try {
       await this.trackingService.startSession(state.user.userId, data.rideId);
+      state.wasSharing = true;
       this.server.to(data.rideId).emit('sharing_started', {
         rideId: data.rideId,
         userId: state.user.userId,
@@ -210,6 +261,7 @@ export class LocationGateway
     const state = this.getSocketState(client);
     try {
       await this.trackingService.endSession(state.user.userId, data.rideId);
+      state.wasSharing = false;
       this.server.to(data.rideId).emit('sharing_stopped', {
         rideId: data.rideId,
         userId: state.user.userId,
@@ -219,8 +271,10 @@ export class LocationGateway
     }
   }
 
+  /**
+   * Handler for the 'locationUpdate' event (camelCase — used by the frontend guide).
+   */
   @SubscribeMessage('locationUpdate')
-  @SubscribeMessage('location_update')
   async handleLocationUpdate(
     @MessageBody()
     data: {
@@ -235,18 +289,84 @@ export class LocationGateway
     @ConnectedSocket()
     client: Socket,
   ) {
+    return this.processLocationUpdate(data, client);
+  }
+
+  /**
+   * Handler for the 'location_update' event (snake_case — alias for compatibility).
+   */
+  @SubscribeMessage('location_update')
+  async handleLocationUpdateSnake(
+    @MessageBody()
+    data: {
+      rideId: string;
+      lat: number;
+      lng: number;
+      speed?: number;
+      heading?: number;
+      battery?: number;
+      status?: string;
+    },
+    @ConnectedSocket()
+    client: Socket,
+  ) {
+    return this.processLocationUpdate(data, client);
+  }
+
+  /**
+   * Shared logic for processing location updates from either event name.
+   */
+  private async processLocationUpdate(
+    data: {
+      rideId: string;
+      lat: number;
+      lng: number;
+      speed?: number;
+      heading?: number;
+      battery?: number;
+      status?: string;
+    },
+    client: Socket,
+  ) {
     const state = this.getSocketState(client);
 
     try {
+      // Verify ride membership from cache (no DB hit after joinRide)
+      if (!state.verifiedRides.has(data.rideId)) {
+        await this.ridesService.assertMember(data.rideId, state.user.userId);
+        state.verifiedRides.add(data.rideId);
+      }
+
       const dto = await this.validateLocationPayload(data);
+
+      // Auto-ensure session: if the user is sending location updates but
+      // doesn't have an active session (e.g., reconnected after disconnect),
+      // auto-create one and notify other riders.
+      const { wasCreated } = await this.trackingService.ensureSession(
+        state.user.userId,
+        dto.rideId,
+      );
+
+      if (wasCreated) {
+        this.logger.log(
+          `Auto-restored sharing session for user ${state.user.userId} in ride ${dto.rideId}`,
+        );
+        this.server.to(dto.rideId).emit('sharing_started', {
+          rideId: dto.rideId,
+          userId: state.user.userId,
+        });
+        state.wasSharing = true;
+      }
+
       const savedLocation = await this.trackingService.saveLocation(
         state.user.userId,
         dto,
       );
 
-      if (!savedLocation) return; // Skip duplicate
+      if (!savedLocation) return; // Skip duplicate / GPS noise / GPS jump
 
-      this.server.to(dto.rideId).emit('riderLocation', {
+      // Broadcast to all riders in the room
+      const locationPayload = {
         rideId: dto.rideId,
         userId: state.user.userId,
         lat: savedLocation.lat,
@@ -257,21 +377,10 @@ export class LocationGateway
         battery: savedLocation.battery,
         status: savedLocation.status,
         createdAt: savedLocation.createdAt,
-      });
+      };
 
-      // Emit the location_update alias
-      this.server.to(dto.rideId).emit('location_update', {
-        rideId: dto.rideId,
-        userId: state.user.userId,
-        lat: savedLocation.lat,
-        lng: savedLocation.lng,
-        accuracy: savedLocation.accuracy,
-        speed: savedLocation.speed,
-        heading: savedLocation.heading,
-        battery: savedLocation.battery,
-        status: savedLocation.status,
-        createdAt: savedLocation.createdAt,
-      });
+      this.server.to(dto.rideId).emit('riderLocation', locationPayload);
+      this.server.to(dto.rideId).emit('location_update', locationPayload);
 
       // Emit the location_broadcast event from the specification contract
       this.server.to(dto.rideId).emit('location_broadcast', {
@@ -395,6 +504,10 @@ export class LocationGateway
     }
   }
 
+  // ======================================
+  // PRIVATE HELPERS
+  // ======================================
+
   private getSocketState(client: Socket) {
     const state = this.socketStates.get(client.id);
 
@@ -425,6 +538,8 @@ export class LocationGateway
   private emitError(client: Socket, error: unknown) {
     const message =
       error instanceof Error ? error.message : 'Socket operation failed';
+
+    this.logger.warn(`Socket error for ${client.id}: ${message}`);
 
     client.emit('error', {
       message,

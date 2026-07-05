@@ -33,6 +33,10 @@ export class LiveLocationSession {
   })
   isActive: boolean;
 
+  /** Tracks the last time the session received a location ping */
+  @Prop({ default: () => new Date() })
+  lastPingAt: Date;
+
   createdAt: Date;
 
   updatedAt: Date;
@@ -42,3 +46,9 @@ export const LiveLocationSessionSchema =
   SchemaFactory.createForClass(LiveLocationSession);
 
 LiveLocationSessionSchema.index({ roomId: 1, userId: 1, isActive: 1 });
+
+// TTL: auto-delete ended sessions after 24 hours
+LiveLocationSessionSchema.index(
+  { endTime: 1 },
+  { expireAfterSeconds: 86400, partialFilterExpression: { isActive: false } },
+);

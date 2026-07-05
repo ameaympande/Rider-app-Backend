@@ -54,3 +54,6 @@ export class RiderLocation {
 export const RiderLocationSchema = SchemaFactory.createForClass(RiderLocation);
 
 RiderLocationSchema.index({ rideId: 1, userId: 1, createdAt: -1 });
+
+// TTL: auto-delete location points older than 7 days
+RiderLocationSchema.index({ createdAt: 1 }, { expireAfterSeconds: 604800 });

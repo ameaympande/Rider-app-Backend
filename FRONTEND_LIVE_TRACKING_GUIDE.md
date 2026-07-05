@@ -18,8 +18,13 @@ export const createRideSocket = (token: string): Socket => {
     auth: {
       token,
     },
-    transports: ['websocket'],
+    transports: ['websocket', 'polling'], // Fallback to polling on bad networks
     autoConnect: false,
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 10000,
+    timeout: 15000,
   });
 };
 ```
@@ -33,15 +38,18 @@ Here is the life-cycle flow for real-time tracking:
 ### Join Flow
 1. **Join Socket Room:** Client emits `joinRide` with `{ rideId }`.
 2. **Receive Initial State:** Client immediately receives a single `liveRiders` event containing the list of all riders, their profile details, sharing status, and latest locations.
-3. **Presence:** Other riders in the room receive the `user_joined` (alias: `riderJoined`) event.
+3. **Session State:** Client receives either `session_restored` (active sharing session found) or `session_lost` (previous session ended — re-start sharing if desired).
+4. **Presence:** Other riders in the room receive the `user_joined` (alias: `riderJoined`) event.
 
 ### Tracking Flow
 * **Start Sharing Location:** Client emits `startSharing` with `{ rideId }`. Other riders receive `sharing_started`.
 * **Send Location Update:** Client periodically emits `locationUpdate` with coordinate details. Other riders receive `location_update` (alias: `riderLocation`).
+  - **Auto-session-restore:** If a client sends `locationUpdate` without an active session (e.g., after reconnect), the server automatically creates a session and broadcasts `sharing_started`.
 * **Update Speed/Status:** Client emits `speedUpdate` or `riderStatus`. Other riders receive `riderSpeed` or `rideUpdated`.
 * **SOS Alert:** Client emits `emergencySOS`. Other riders receive `emergencyAlert`.
 * **Stop Sharing Location:** Client emits `stopSharing` with `{ rideId }`. Other riders receive `sharing_stopped`.
 * **Leave Room:** Client emits `leaveRide` with `{ rideId }`. Other riders receive `user_left` (alias: `riderLeft`).
+* **Ride Ended:** If the admin ends the ride, all clients receive `rideEnded` with `{ rideId }`.
 
 ---
 
@@ -50,8 +58,9 @@ Here is the life-cycle flow for real-time tracking:
 Use this React hook in your `RideRoomScreen` to manage live coordinates, speed metrics, and rider presence.
 
 ```typescript
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { Socket } from 'socket.io-client';
+import { AppState, AppStateStatus } from 'react-native';
 import { createRideSocket } from '../utils/socket'; // Adjust path
 
 export interface Rider {
@@ -82,10 +91,11 @@ export const useLiveRide = (rideId: string, token: string) => {
   const [riders, setRiders] = useState<Rider[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isCurrentlySharing, setIsCurrentlySharing] = useState(false);
+  const [hasSessionRestored, setHasSessionRestored] = useState(false);
   const socketRef = useRef<Socket | null>(null);
 
   useEffect(() => {
-    // 1. Initialize socket connection
+    // 1. Initialize socket connection with reconnection built-in
     const socket = createRideSocket(token);
     socketRef.current = socket;
 
@@ -93,12 +103,21 @@ export const useLiveRide = (rideId: string, token: string) => {
 
     socket.on('connect', () => {
       setIsConnected(true);
-      // 2. Join the ride room
+      // 2. Join the ride room (also handles reconnection — re-joins automatically)
       socket.emit('joinRide', { rideId });
     });
 
-    socket.on('disconnect', () => {
+    socket.on('disconnect', (reason) => {
       setIsConnected(false);
+      console.warn('Socket disconnected:', reason);
+    });
+
+    socket.on('reconnect', (attempt: number) => {
+      console.log(`Reconnected after ${attempt} attempt(s)`);
+    });
+
+    socket.on('reconnect_error', (error: Error) => {
+      console.error('Reconnection error:', error.message);
     });
 
     // 3. Listen for initial state of all riders
@@ -106,7 +125,21 @@ export const useLiveRide = (rideId: string, token: string) => {
       setRiders(initialRiders);
     });
 
-    // 4. Update presence: Rider joined
+    // 4. Session restored (reconnection — sharing session still active)
+    socket.on('session_restored', ({ rideId: restoredRideId }) => {
+      setIsCurrentlySharing(true);
+      setHasSessionRestored(true);
+      console.log(`Sharing session restored for ride ${restoredRideId}`);
+    });
+
+    // 5. Session lost (previous session ended)
+    socket.on('session_lost', ({ rideId: lostRideId }) => {
+      setIsCurrentlySharing(false);
+      setHasSessionRestored(false);
+      console.log(`Sharing session lost for ride ${lostRideId}`);
+    });
+
+    // 6. Update presence: Rider joined
     socket.on('user_joined', ({ userId }) => {
       setRiders((prev) =>
         prev.map((r) =>
@@ -117,7 +150,7 @@ export const useLiveRide = (rideId: string, token: string) => {
       );
     });
 
-    // 5. Update presence: Rider left the room
+    // 7. Update presence: Rider left the room
     socket.on('user_left', ({ userId }) => {
       setRiders((prev) =>
         prev.map((r) =>
@@ -128,7 +161,7 @@ export const useLiveRide = (rideId: string, token: string) => {
       );
     });
 
-    // 6. Rider went offline/disconnected
+    // 8. Rider went offline/disconnected
     socket.on('user_offline', ({ userId }) => {
       setRiders((prev) =>
         prev.map((r) =>
@@ -139,7 +172,7 @@ export const useLiveRide = (rideId: string, token: string) => {
       );
     });
 
-    // 7. Rider started sharing location
+    // 9. Rider started sharing location
     socket.on('sharing_started', ({ userId }) => {
       setRiders((prev) =>
         prev.map((r) =>
@@ -148,7 +181,7 @@ export const useLiveRide = (rideId: string, token: string) => {
       );
     });
 
-    // 8. Rider stopped sharing location
+    // 10. Rider stopped sharing location
     socket.on('sharing_stopped', ({ userId }) => {
       setRiders((prev) =>
         prev.map((r) =>
@@ -157,13 +190,14 @@ export const useLiveRide = (rideId: string, token: string) => {
       );
     });
 
-    // 9. Rider location updated
+    // 11. Rider location updated
     socket.on('location_update', (updatedLoc) => {
       setRiders((prev) =>
         prev.map((r) =>
           r.user._id === updatedLoc.userId
             ? {
                 ...r,
+                isSharing: true, // If we're getting updates, they're sharing
                 location: {
                   lat: updatedLoc.lat,
                   lng: updatedLoc.lng,
@@ -180,7 +214,7 @@ export const useLiveRide = (rideId: string, token: string) => {
       );
     });
 
-    // 10. Rider speed updated
+    // 12. Rider speed updated
     socket.on('riderSpeed', ({ userId, speed }) => {
       setRiders((prev) =>
         prev.map((r) =>
@@ -191,7 +225,7 @@ export const useLiveRide = (rideId: string, token: string) => {
       );
     });
 
-    // 11. Rider custom status updated (e.g. STOPPED, RIDING)
+    // 13. Rider custom status updated (e.g. STOPPED, RIDING)
     socket.on('rideUpdated', ({ userId, status }) => {
       setRiders((prev) =>
         prev.map((r) =>
@@ -202,16 +236,35 @@ export const useLiveRide = (rideId: string, token: string) => {
       );
     });
 
-    // 12. Emergency SOS Alert
+    // 14. Emergency SOS Alert
     socket.on('emergencyAlert', ({ userId, message }) => {
       alert(`⚠️ SOS Alert from rider! Message: ${message}`);
+    });
+
+    // 15. Ride ended by admin
+    socket.on('rideEnded', ({ rideId: endedRideId }) => {
+      setIsCurrentlySharing(false);
+      // Navigate back or show a notification — ride is over
+      console.log(`Ride ${endedRideId} has ended`);
     });
 
     socket.on('error', (err) => {
       console.error('Socket error:', err);
     });
 
+    // Handle app state changes (background/foreground)
+    const handleAppStateChange = (nextState: AppStateStatus) => {
+      if (nextState === 'active' && !socket.connected) {
+        socket.connect();
+      }
+    };
+    const appStateSubscription = AppState.addEventListener(
+      'change',
+      handleAppStateChange,
+    );
+
     return () => {
+      appStateSubscription.remove();
       if (socketRef.current) {
         socketRef.current.emit('leaveRide', { rideId });
         socketRef.current.disconnect();
@@ -220,47 +273,54 @@ export const useLiveRide = (rideId: string, token: string) => {
   }, [rideId, token]);
 
   // Actions
-  const startSharing = () => {
+  const startSharing = useCallback(() => {
     if (socketRef.current) {
       socketRef.current.emit('startSharing', { rideId });
       setIsCurrentlySharing(true);
     }
-  };
+  }, [rideId]);
 
-  const stopSharing = () => {
+  const stopSharing = useCallback(() => {
     if (socketRef.current) {
       socketRef.current.emit('stopSharing', { rideId });
       setIsCurrentlySharing(false);
     }
-  };
+  }, [rideId]);
 
-  const updateLocation = (coords: {
-    lat: number;
-    lng: number;
-    accuracy?: number;
-    speed: number;
-    heading: number;
-    battery: number;
-    status: string;
-  }) => {
-    if (socketRef.current && isCurrentlySharing) {
-      socketRef.current.emit('locationUpdate', {
-        rideId,
-        ...coords,
-      });
-    }
-  };
+  const updateLocation = useCallback(
+    (coords: {
+      lat: number;
+      lng: number;
+      accuracy?: number;
+      speed: number;
+      heading: number;
+      battery: number;
+      status: string;
+    }) => {
+      if (socketRef.current && isCurrentlySharing) {
+        socketRef.current.emit('locationUpdate', {
+          rideId,
+          ...coords,
+        });
+      }
+    },
+    [rideId, isCurrentlySharing],
+  );
 
-  const triggerSOS = (message?: string) => {
-    if (socketRef.current) {
-      socketRef.current.emit('emergencySOS', { rideId, message });
-    }
-  };
+  const triggerSOS = useCallback(
+    (message?: string) => {
+      if (socketRef.current) {
+        socketRef.current.emit('emergencySOS', { rideId, message });
+      }
+    },
+    [rideId],
+  );
 
   return {
     riders,
     isConnected,
     isCurrentlySharing,
+    hasSessionRestored,
     startSharing,
     stopSharing,
     updateLocation,
@@ -374,3 +434,24 @@ export const startLocationTracking = async (
   );
 };
 ```
+
+---
+
+## 🔌 6. Reconnection & Session Recovery
+
+The backend handles reconnection gracefully:
+
+1. **Socket.IO auto-reconnects** with exponential backoff (configured in `createRideSocket`)
+2. **On reconnect**, re-emit `joinRide` — the `connect` handler does this automatically
+3. **Server checks for active session** and emits either:
+   - `session_restored` — your sharing session is still active, continue sending `locationUpdate`
+   - `session_lost` — your session ended during disconnect, re-start sharing if desired
+4. **Auto-session-restore on location update** — if you send `locationUpdate` without an active session, the server auto-creates one and broadcasts `sharing_started` to other riders
+
+### App State Handling
+The hook automatically handles iOS/Android app state transitions:
+- When the app returns to foreground, reconnects the socket if needed
+- The `connect` callback re-joins the ride room automatically
+
+### Error Recovery
+Socket errors are emitted as `error` events. They do **not** disconnect the socket — you can continue sending events after an error.
