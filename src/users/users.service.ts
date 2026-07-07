@@ -34,7 +34,7 @@ export class UsersService {
     const existing = await this.findByPhone(data.phone ?? '');
 
     if (existing) {
-      throw new ConflictException('Phone already registered');
+      return existing;
     }
 
     return this.userModel.create(data);
