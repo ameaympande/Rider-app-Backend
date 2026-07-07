@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, Logger } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { MongooseModule } from '@nestjs/mongoose';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
@@ -25,7 +25,17 @@ import { AppService } from './app.service';
       ttl: 60000,
       limit: 100,
     }]),
-    MongooseModule.forRoot(process.env.MONGO_URI as string),
+    MongooseModule.forRoot(process.env.MONGO_URI as string, {
+      connectionFactory: (connection) => {
+        connection.on('connected', () => {
+          Logger.log('Database connected successfully', 'MongooseModule');
+        });
+        connection.on('error', (error) => {
+          Logger.error('Database connection failed', error, 'MongooseModule');
+        });
+        return connection;
+      },
+    }),
 
     AuthModule,
     UsersModule,
